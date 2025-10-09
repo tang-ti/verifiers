@@ -1,7 +1,7 @@
 [project]
 name = "math-python"
 description = "Solve math problems using Python in a sandbox environment"
-tags = ["tool-use", "math", "sandbox", "train"]
+tags = ["tool-use", "math", "sandbox", "train", "prime-sandboxes", "python", "coding"]
 version = "0.1.4"
 requires-python = ">=3.11"
 dependencies = [
