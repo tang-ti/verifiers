@@ -2,7 +2,7 @@
 name = "math-python"
 description = "Solve math problems using Python in a sandbox environment"
 tags = ["tool-use", "math", "sandbox", "train", "prime-sandboxes", "python", "coding"]
-version = "0.1.4"
+version = "0.1.5"
 requires-python = ">=3.11"
 dependencies = [
     "verifiers>=0.1.5.post0",
