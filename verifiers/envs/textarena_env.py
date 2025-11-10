@@ -1,6 +1,8 @@
 import random
+import re
 from copy import deepcopy
 from typing import Any, Callable
+import os
 
 try:
     import nltk  # type: ignore
@@ -31,6 +33,22 @@ from verifiers.types import (  # noqa: E402
     Messages,
     State,
 )
+
+
+def clean_assistant_message(content: str) -> str:
+    """
+    Remove reasoning tokens (<think>...</think> or <tools>...</tools>) from assistant message
+    to reduce context length during rollout.
+    Preserves solution markers.
+    Handles malformed XML where LLM outputs <thinkContent or <toolsContent without closing >.
+    Also handles alternative closing tag <|end_internal_thought|>.
+    """
+    # Remove both <think> and <tools> tags and their content
+    # Handles </think>, </tools>, or <|end_internal_thought|> as closing tags
+    content = re.sub(r'<(?:think|tools).*?(?:</(?:think|tools)>|<\|end_internal_thought\|>)', '', content, flags=re.DOTALL)
+    # Clean up excessive whitespace
+    content = re.sub(r'\n\s*\n\s*\n', '\n\n', content)
+    return content.strip()
 
 
 class TextArenaEnv(MultiTurnEnv):
@@ -86,11 +104,21 @@ class TextArenaEnv(MultiTurnEnv):
     async def env_response(
         self, messages: Messages, state: State, **kwargs: Any
     ) -> tuple[Messages, State]:
+        # Clean the last assistant message to reduce context length
+        if os.environ.get("is_train") and messages and isinstance(messages[-1], dict):
+            if messages[-1].get("role") == "assistant" and "content" in messages[-1]:
+                messages[-1]["content"] = clean_assistant_message(
+                    messages[-1]["content"]
+                )
+        
         # load env
         if "ta_env" not in state:
             ta_env = deepcopy(self.ta_env)
             ta_env.reset(num_players=1)
-            ta_env.state.game_state["secret_word"] = state["answer"]
+            if os.environ.get("is_train"):
+                # FIX: Set secret word at the WordleEnv level (not wrapper level)
+                # TextArena uses lowercase for secret words
+                ta_env.env.env.state.game_state["secret_word"] = state["answer"].lower()
             state["ta_env"] = ta_env
         else:
             ta_env = state["ta_env"]
@@ -101,7 +129,31 @@ class TextArenaEnv(MultiTurnEnv):
         is_completed, _ = ta_env.step(str(guess))
         state["is_completed"] = is_completed
         _, observation = ta_env.get_observation()
+        
+        if os.environ.get("is_train"):
+            # Handle case where game ends without feedback in observation
+            # When is_completed=True, TextArena doesn't include feedback in observation
+            # but it IS correctly stored in guess_history
+            # Check if the observation has feedback for the most recent guess
+            guess_history = ta_env.state.game_state.get("guess_history", [])
+            if is_completed and guess_history:
+                last_guess, feedback_list = guess_history[-1]
+                expected_feedback_line = " ".join(last_guess.upper())
+                
+                # If the last guess feedback is not in the observation, add it
+                if expected_feedback_line not in observation:
+                    feedback_text = f"\n[GAME] You submitted [{last_guess}].\nFeedback:\n"
+                    feedback_text += expected_feedback_line + "\n"
+                    feedback_text += " ".join(feedback_list)
+                    observation += feedback_text
+        
         feedback = self.feedback_fn(observation)
+        
+        if os.environ.get("is_train"):
+            # FIX: Increment turn counter to match MultiTurnEnv behavior
+            # This ensures proper turn counting for environments that rely on it
+            state["turn"] = state.get("turn", 0) + 1
+        
         return [{"role": "user", "content": str(feedback)}], state
 
     def ta_to_hf(self) -> tuple[Dataset, Dataset | None]:
